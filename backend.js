@@ -12,7 +12,7 @@ app.get('/data', async (req, res) => {
   try {
     await client.connect();
     const daten = await client
-      .db('iot')
+      .db('pklose')
       .collection('messwerte')
       .find({})
       .sort({ timestamp: -1 })
