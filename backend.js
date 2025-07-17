@@ -6,7 +6,6 @@ const { MongoClient } = require('mongodb');
 const app = express();
 app.use(cors());
 
-// 🔒 AUTHENTIFIZIERUNG HIER
 app.use(basicAuth({
   users: { 'paul': 'Start123' },
   challenge: true,
