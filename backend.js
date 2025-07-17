@@ -1,9 +1,17 @@
+
 const express = require('express');
 const cors = require('cors');
 const { MongoClient } = require('mongodb');
 
 const app = express();
 app.use(cors());
+
+// 🔒 AUTHENTIFIZIERUNG HIER
+app.use(basicAuth({
+  users: { 'paul': 'Start123' },
+  challenge: true,
+  realm: 'MTS Dashboard'
+}));
 
 const uri = 'mongodb+srv://pklose:Start123456@iotcluster.ifvtvb3.mongodb.net/?retryWrites=true&w=majority&appName=IoTCluster';
 const client = new MongoClient(uri);
