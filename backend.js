@@ -5,6 +5,8 @@ const nodemailer = require("nodemailer");
 const cron = require("node-cron");
 const PDFDocument = require("pdfkit");
 const stream = require("stream");
+const multer = require("multer");
+const upload = multer();
 
 const app = express();
 app.use(cors());
@@ -15,30 +17,15 @@ const client = new MongoClient(uri);
 
 let emailSettings = {
   email: "",
-  interval: "daily", // default
+  interval: "daily",
 };
 
-// 📩 E-Mail speichern vom Frontend
 app.post("/email-settings", (req, res) => {
   const { email, interval } = req.body;
   emailSettings = { email, interval };
-  console.log("📩 Neue Einstellungen:", emailSettings);
   res.send("✅ E-Mail Einstellungen gespeichert");
 });
- // 📤 Manuelles Auslösen per Button
-app.post("/send-now", async (req, res) => {
-  try {
-    if (!emailSettings.email) {
-      return res.status(400).send("❌ Keine E-Mail-Adresse gesetzt.");
-    }
-    await sendReportEmail();
-    res.send("✅ E-Mail wurde gesendet");
-  } catch (error) {
-    console.error("❌ Fehler beim Senden:", error);
-    res.status(500).send("❌ Fehler beim Senden");
-  }
-});
-// 📊 Daten-API für das Frontend
+
 app.get("/data", async (req, res) => {
   try {
     await client.connect();
@@ -55,57 +42,65 @@ app.get("/data", async (req, res) => {
   }
 });
 
-// 🕒 Geplanter Versand (täglich um 08:00 Uhr)
-cron.schedule("0 8 * * *", async () => {
-  if (emailSettings.email && emailSettings.interval === "daily") {
-    await sendReportEmail();
-  }
-});
-
-// 📄 PDF GENERIEREN
-async function generatePDF(data) {
+// PDF-Generierung mit Randdaten (kein Screenshot)
+async function generatePDF(data, label = "Automatischer Bericht") {
   const doc = new PDFDocument();
   const bufferStream = new stream.PassThrough();
   doc.pipe(bufferStream);
 
-  doc.fontSize(18).text("📊 IoT Waagen Bericht", { align: "center" });
+  doc.fontSize(18).text(label, { align: "center" });
   doc.moveDown();
-
   doc.fontSize(12).text(`Datum: ${new Date().toLocaleString("de-DE")}`);
   doc.moveDown();
 
-  doc.text("➤ Zusammenfassung:");
-  const last = data[data.length - 1];
   const first = data[0];
-  const diff = (field) =>
-    (parseFloat(last?.[field] || 0) - parseFloat(first?.[field] || 0)).toFixed(2);
+  const last = data[data.length - 1];
 
-  doc.text(`- Förderleistung (t/h): ${(first.gewicht * first.bandgeschwindigkeit * first.korrekturfaktor * 3.6).toFixed(2)}`);
-  doc.text(`- Gewicht (kg): Ø ${(average(data, "gewicht")).toFixed(2)}`);
-  doc.text(`- Bandgeschwindigkeit (m/s): Ø ${(average(data, "bandgeschwindigkeit")).toFixed(2)}`);
-  doc.text(`- Korrekturfaktor: Ø ${(average(data, "korrekturfaktor")).toFixed(2)}`);
-  doc.text(`- Total Gewicht (t): Δ ${diff("total_weight")}`);
-  doc.text(`- Running Total (t): Δ ${diff("running_total")}`);
-  doc.moveDown();
-
-  doc.text("➤ Einzelwerte:");
-  data.slice(0, 50).forEach((e) => {
-    doc.text(`${e.timestamp} - Gewicht: ${e.gewicht} kg | Band: ${e.bandgeschwindigkeit} m/s`);
-  });
-
-  doc.end();
-
-  const buffers = [];
-  for await (const chunk of bufferStream) {
-    buffers.push(chunk);
+  function stats(field) {
+    const values = data.map(e => parseFloat(e[field] || 0));
+    return {
+      first: parseFloat(first?.[field] || 0),
+      last: parseFloat(last?.[field] || 0),
+      min: Math.min(...values),
+      max: Math.max(...values),
+      avg: values.reduce((a, b) => a + b, 0) / values.length
+    };
   }
 
+  const fields = [
+    { field: "gewicht", unit: "kg" },
+    { field: "bandgeschwindigkeit", unit: "m/s" },
+    { field: "korrekturfaktor", unit: "" },
+    { field: "total_weight", unit: "t" },
+    { field: "running_total", unit: "t" },
+  ];
+
+  fields.forEach(({ field, unit }) => {
+    const s = stats(field);
+    doc.text(`➤ ${field}: von ${s.first.toFixed(2)} bis ${s.last.toFixed(2)} ${unit}`);
+    doc.text(`   Min: ${s.min.toFixed(2)}, Max: ${s.max.toFixed(2)}, Ø: ${s.avg.toFixed(2)} ${unit}`);
+    doc.moveDown(0.5);
+  });
+
+  // Förderleistung
+  const leistungen = data.map(e => parseFloat(e.gewicht || 0) * parseFloat(e.bandgeschwindigkeit || 0) * parseFloat(e.korrekturfaktor || 1) * 3.6);
+  const leistungStats = {
+    first: leistungen[0],
+    last: leistungen[leistungen.length - 1],
+    min: Math.min(...leistungen),
+    max: Math.max(...leistungen),
+    avg: leistungen.reduce((a, b) => a + b, 0) / leistungen.length,
+  };
+  doc.text(`➤ Förderleistung (t/h): von ${leistungStats.first.toFixed(2)} bis ${leistungStats.last.toFixed(2)}`);
+  doc.text(`   Min: ${leistungStats.min.toFixed(2)}, Max: ${leistungStats.max.toFixed(2)}, Ø: ${leistungStats.avg.toFixed(2)} t/h`);
+
+  doc.end();
+  const buffers = [];
+  for await (const chunk of bufferStream) buffers.push(chunk);
   return Buffer.concat(buffers);
 }
 
-// 📧 E-MAIL VERSAND
-async function sendReportEmail() {
-  console.log("📤 Sende PDF an:", emailSettings.email);
+async function sendReportEmail(label, daysBack) {
   await client.connect();
   const daten = await client
     .db("pklose")
@@ -114,13 +109,17 @@ async function sendReportEmail() {
     .sort({ timestamp: -1 })
     .limit(1000)
     .toArray();
+  const now = new Date();
+  const cutoff = new Date();
+  cutoff.setDate(now.getDate() - daysBack);
+  const filtered = daten.reverse().filter(e => new Date(e.timestamp.replace(" ", "T")) >= cutoff);
 
-  const pdfBuffer = await generatePDF(daten.reverse());
+  const pdfBuffer = await generatePDF(filtered, label);
 
   const transporter = nodemailer.createTransport({
     service: "gmail",
     auth: {
-      user: process.env.EMAIL_USER, // z. B. render env var
+      user: process.env.EMAIL_USER,
       pass: process.env.EMAIL_PASS,
     },
   });
@@ -128,25 +127,34 @@ async function sendReportEmail() {
   await transporter.sendMail({
     from: `"IoT Dashboard" <${process.env.EMAIL_USER}>`,
     to: emailSettings.email,
-    subject: "📈 IoT Waagen Report",
-    text: "Im Anhang findest du den automatisierten PDF-Bericht.",
-    attachments: [{
-      filename: "bericht.pdf",
-      content: pdfBuffer,
-      contentType: "application/pdf",
-    }],
+    subject: label,
+    text: "Im Anhang findest du deinen PDF-Bericht.",
+    attachments: [{ filename: "bericht.pdf", content: pdfBuffer }],
   });
 
-  console.log("✅ Bericht gesendet.");
+  console.log(`📤 ${label} gesendet an ${emailSettings.email}`);
 }
 
-// 🌐 Start
-app.listen(10000, () => {
-  console.log("API läuft auf Port 10000");
+// ⏰ CRON-Jobs
+cron.schedule("0 8 * * *", () => {
+  if (emailSettings.interval === "daily") sendReportEmail("📩 Täglicher Bericht", 1);
+});
+cron.schedule("0 8 * * 1", () => {
+  if (emailSettings.interval === "weekly") sendReportEmail("📩 Wöchentlicher Bericht", 7);
+});
+cron.schedule("0 8 1 * *", () => {
+  if (emailSettings.interval === "monthly") sendReportEmail("📩 Monatsbericht", 30);
 });
 
-// 📊 Hilfsfunktion Durchschnitt
-function average(data, field) {
-  if (!data.length) return 0;
-  return data.reduce((sum, e) => sum + parseFloat(e[field] || 0), 0) / data.length;
-}
+// 📬 Manuell senden ("Jetzt senden" Button)
+app.post("/send-now", async (req, res) => {
+  try {
+    await sendReportEmail("📩 Manuell gesendeter Bericht", 1);
+    res.send("✅ Bericht manuell gesendet");
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("❌ Fehler beim Senden");
+  }
+});
+
+app.listen(10000, () => console.log("🚀 API läuft auf Port 10000"));
