@@ -54,7 +54,7 @@ async function generatePDF(data, label = "Automatischer Bericht") {
   doc.moveDown();
 
   if (!data || data.length === 0) {
-    doc.text("⚠️ Keine Daten für diesen Zeitraum verfügbar.");
+    doc.text("Keine Daten für diesen Zeitraum verfügbar.");
     doc.end();
     const buffers = [];
     for await (const chunk of bufferStream) buffers.push(chunk);
@@ -128,8 +128,14 @@ async function sendReportEmail(label, daysBack) {
   const now = new Date();
   const cutoff = new Date();
   cutoff.setDate(now.getDate() - daysBack);
-  const filtered = daten.reverse().filter(e => new Date(e.timestamp.replace(" ", "T")) >= cutoff);
 
+
+const filtered = daten.reverse().filter(e => {
+  const [datePart, timePart] = e.timestamp.split(" ");
+  const isoString = `${datePart}T${timePart}`;
+  const ts = new Date(isoString);
+  return !isNaN(ts) && ts >= cutoff;
+});
   const pdfBuffer = await generatePDF(filtered, label);
 
   const transporter = nodemailer.createTransport({
