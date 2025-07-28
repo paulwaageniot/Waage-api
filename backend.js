@@ -128,7 +128,6 @@ async function generatePDF(data, label = "Automatischer Bericht") {
   for await (const chunk of bufferStream) buffers.push(chunk);
   return Buffer.concat(buffers);
 }
-}
 async function sendReportEmail(label, daysBack) {
   await client.connect();
   const daten = await client
