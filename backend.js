@@ -53,53 +53,69 @@ async function generatePDF(data, label = "Automatischer Bericht") {
   doc.fontSize(12).text(`Datum: ${new Date().toLocaleString("de-DE")}`);
   doc.moveDown();
 
-  const first = data[0];
-  const last = data[data.length - 1];
+  if (!data || data.length === 0) {
+    doc.text("⚠️ Keine Daten für diesen Zeitraum verfügbar.");
+    doc.end();
+    const buffers = [];
+    for await (const chunk of bufferStream) buffers.push(chunk);
+    return Buffer.concat(buffers);
+  }
 
   function stats(field) {
-    const values = data.map(e => parseFloat(e[field] || 0));
+    const values = data
+      .map(e => parseFloat(e[field]))
+      .filter(v => !isNaN(v));
+    if (values.length === 0) return null;
+
     return {
-      first: parseFloat(first?.[field] || 0),
-      last: parseFloat(last?.[field] || 0),
+      first: values[0],
+      last: values[values.length - 1],
       min: Math.min(...values),
       max: Math.max(...values),
-      avg: values.reduce((a, b) => a + b, 0) / values.length
+      avg: values.reduce((a, b) => a + b, 0) / values.length,
     };
   }
 
   const fields = [
-    { field: "gewicht", unit: "kg" },
-    { field: "bandgeschwindigkeit", unit: "m/s" },
-    { field: "korrekturfaktor", unit: "" },
-    { field: "total_weight", unit: "t" },
-    { field: "running_total", unit: "t" },
+    { field: "gewicht", label: "Gewicht", unit: "kg" },
+    { field: "bandgeschwindigkeit", label: "Bandgeschwindigkeit", unit: "m/s" },
+    { field: "korrekturfaktor", label: "Korrekturfaktor", unit: "" },
+    { field: "total_weight", label: "Tageszähler", unit: "t" },
+    { field: "running_total", label: "Running Total", unit: "t" },
   ];
 
-  fields.forEach(({ field, unit }) => {
+  fields.forEach(({ field, label, unit }) => {
     const s = stats(field);
-    doc.text(`➤ ${field}: von ${s.first.toFixed(2)} bis ${s.last.toFixed(2)} ${unit}`);
-    doc.text(`   Min: ${s.min.toFixed(2)}, Max: ${s.max.toFixed(2)}, Ø: ${s.avg.toFixed(2)} ${unit}`);
+    if (!s) {
+      doc.text(`➤ ${label}: Keine gültigen Werte gefunden`);
+    } else {
+      doc.text(`➤ ${label}:`);
+      doc.text(`   Start: ${s.first.toFixed(2)} ${unit}`);
+      doc.text(`   Ende: ${s.last.toFixed(2)} ${unit}`);
+      doc.text(`   Min: ${s.min.toFixed(2)}, Max: ${s.max.toFixed(2)}, Ø: ${s.avg.toFixed(2)} ${unit}`);
+    }
     doc.moveDown(0.5);
   });
 
-  // Förderleistung
-  const leistungen = data.map(e => parseFloat(e.gewicht || 0) * parseFloat(e.bandgeschwindigkeit || 0) * parseFloat(e.korrekturfaktor || 1) * 3.6);
-  const leistungStats = {
-    first: leistungen[0],
-    last: leistungen[leistungen.length - 1],
-    min: Math.min(...leistungen),
-    max: Math.max(...leistungen),
-    avg: leistungen.reduce((a, b) => a + b, 0) / leistungen.length,
-  };
-  doc.text(`➤ Förderleistung (t/h): von ${leistungStats.first.toFixed(2)} bis ${leistungStats.last.toFixed(2)}`);
-  doc.text(`   Min: ${leistungStats.min.toFixed(2)}, Max: ${leistungStats.max.toFixed(2)}, Ø: ${leistungStats.avg.toFixed(2)} t/h`);
+  // Förderleistung (extra berechnet)
+  const leistungen = data
+    .map(e => parseFloat(e.gewicht || 0) * parseFloat(e.bandgeschwindigkeit || 0) * parseFloat(e.korrekturfaktor || 1) * 3.6)
+    .filter(v => !isNaN(v));
+
+  if (leistungen.length === 0) {
+    doc.text("➤ Förderleistung: Keine gültigen Werte berechenbar.");
+  } else {
+    doc.text(`➤ Förderleistung (t/h):`);
+    doc.text(`   Start: ${leistungen[0].toFixed(2)}`);
+    doc.text(`   Ende: ${leistungen[leistungen.length - 1].toFixed(2)}`);
+    doc.text(`   Min: ${Math.min(...leistungen).toFixed(2)}, Max: ${Math.max(...leistungen).toFixed(2)}, Ø: ${(leistungen.reduce((a, b) => a + b, 0) / leistungen.length).toFixed(2)} t/h`);
+  }
 
   doc.end();
   const buffers = [];
   for await (const chunk of bufferStream) buffers.push(chunk);
   return Buffer.concat(buffers);
 }
-
 async function sendReportEmail(label, daysBack) {
   await client.connect();
   const daten = await client
