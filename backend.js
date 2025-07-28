@@ -61,21 +61,18 @@ async function generatePDF(data, label = "Automatischer Bericht") {
     return Buffer.concat(buffers);
   }
 
-  function stats(field) {
-    const values = data
-      .map(e => parseFloat(e[field]))
-      .filter(v => !isNaN(v));
-    if (values.length === 0) return null;
+function stats(field) {
+  const values = data.map(e => parseFloat(e[field] || 0)).filter(v => !isNaN(v));
+  if (values.length === 0) return null;
 
-    return {
-      first: values[0],
-      last: values[values.length - 1],
-      min: Math.min(...values),
-      max: Math.max(...values),
-      avg: values.reduce((a, b) => a + b, 0) / values.length,
-    };
-  }
-
+  return {
+    first: values[0],
+    last: values[values.length - 1],
+    min: Math.min(...values),
+    max: Math.max(...values),
+    avg: values.reduce((a, b) => a + b, 0) / values.length,
+  };
+}
   const fields = [
     { field: "gewicht", label: "Gewicht", unit: "kg" },
     { field: "bandgeschwindigkeit", label: "Bandgeschwindigkeit", unit: "m/s" },
@@ -85,18 +82,13 @@ async function generatePDF(data, label = "Automatischer Bericht") {
   ];
 
   fields.forEach(({ field, label, unit }) => {
-    const s = stats(field);
-    if (!s) {
-      doc.text(`➤ ${label}: Keine gültigen Werte gefunden`);
-    } else {
-      doc.text(`➤ ${label}:`);
-      doc.text(`   Start: ${s.first.toFixed(2)} ${unit}`);
-      doc.text(`   Ende: ${s.last.toFixed(2)} ${unit}`);
-      doc.text(`   Min: ${s.min.toFixed(2)}, Max: ${s.max.toFixed(2)}, Ø: ${s.avg.toFixed(2)} ${unit}`);
-    }
-    doc.moveDown(0.5);
-  });
-
+const s = stats(field);
+if (!s) {
+  doc.text(`➤ ${field}: Keine Daten für diesen Zeitraum verfügbar.`);
+} else {
+  doc.text(`➤ ${field}: von ${s.first.toFixed(2)} bis ${s.last.toFixed(2)} ${unit}`);
+  doc.text(`   Min: ${s.min.toFixed(2)}, Max: ${s.max.toFixed(2)}, Ø: ${s.avg.toFixed(2)} ${unit}`);
+}
   // Förderleistung (extra berechnet)
   const leistungen = data
     .map(e => parseFloat(e.gewicht || 0) * parseFloat(e.bandgeschwindigkeit || 0) * parseFloat(e.korrekturfaktor || 1) * 3.6)
@@ -128,14 +120,16 @@ async function sendReportEmail(label, daysBack) {
   const now = new Date();
   const cutoff = new Date();
   cutoff.setDate(now.getDate() - daysBack);
-
-
-const filtered = daten.reverse().filter(e => {
-  const [datePart, timePart] = e.timestamp.split(" ");
-  const isoString = `${datePart}T${timePart}`;
-  const ts = new Date(isoString);
-  return !isNaN(ts) && ts >= cutoff;
+ const filtered = daten.reverse().filter(e => {
+  try {
+    const iso = e.timestamp.replace(" ", "T");
+    const parsed = new Date(iso);
+    return parsed instanceof Date && !isNaN(parsed) && parsed >= cutoff;
+  } catch {
+    return false;
+  }
 });
+
   const pdfBuffer = await generatePDF(filtered, label);
 
   const transporter = nodemailer.createTransport({
