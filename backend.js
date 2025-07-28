@@ -25,7 +25,19 @@ app.post("/email-settings", (req, res) => {
   console.log("📩 Neue Einstellungen:", emailSettings);
   res.send("✅ E-Mail Einstellungen gespeichert");
 });
-
+ // 📤 Manuelles Auslösen per Button
+app.post("/send-now", async (req, res) => {
+  try {
+    if (!emailSettings.email) {
+      return res.status(400).send("❌ Keine E-Mail-Adresse gesetzt.");
+    }
+    await sendReportEmail();
+    res.send("✅ E-Mail wurde gesendet");
+  } catch (error) {
+    console.error("❌ Fehler beim Senden:", error);
+    res.status(500).send("❌ Fehler beim Senden");
+  }
+});
 // 📊 Daten-API für das Frontend
 app.get("/data", async (req, res) => {
   try {
