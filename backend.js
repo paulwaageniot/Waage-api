@@ -1,4 +1,4 @@
-const express = require("express");
+ const express = require("express");
 const cors = require("cors");
 const { MongoClient } = require("mongodb");
 const nodemailer = require("nodemailer");
@@ -17,6 +17,22 @@ let emailSettings = {
   email: "",
   interval: "daily",
 };
+
+let thresholdSettings = {
+  gewicht: 100,
+  band: 2,
+  leistung: 600,
+  korrektur: true,
+};
+let lastKorrekturfaktor = null;
+
+// 📩 Grenzwerte vom Frontend empfangen
+app.post("/thresholds", (req, res) => {
+  const { gewicht, band, leistung, korrektur } = req.body;
+  thresholdSettings = { gewicht, band, leistung, korrektur };
+  console.log("🔧 Neue Grenzwerte:", thresholdSettings);
+  res.send("✅ Grenzwerte gespeichert");
+});
 
 app.post("/email-settings", (req, res) => {
   const { email, interval } = req.body;
@@ -41,7 +57,7 @@ app.get("/data", async (req, res) => {
 });
 
 // 📄 PDF GENERIEREN
- async function generatePDF(data, label = "Automatischer Bericht", daysBack = 1) {
+async function generatePDF(data, label = "Automatischer Bericht", daysBack = 1) {
   const doc = new PDFDocument();
   const bufferStream = new stream.PassThrough();
   doc.pipe(bufferStream);
@@ -93,7 +109,7 @@ app.get("/data", async (req, res) => {
     doc.moveDown(0.5);
   }
 
-  // ➕ Förderleistung
+  // Förderleistung
   const leistungen = data.map(e =>
     parseFloat(e.gewicht || 0) *
     parseFloat(e.bandgeschwindigkeit || 0) *
@@ -103,9 +119,9 @@ app.get("/data", async (req, res) => {
 
   const leistungStats = getStats(leistungen);
   if (!leistungStats) {
-    doc.text("➤ Förderleistung: Keine gültigen Werte berechenbar.");
+    doc.text("- Förderleistung: Keine gültigen Werte berechenbar.");
   } else {
-    doc.text("➤ Förderleistung (t/h):");
+    doc.text("- Förderleistung (t/h):");
     doc.text(`   Start: ${leistungStats.first.toFixed(2)}, Ende: ${leistungStats.last.toFixed(2)}`);
     doc.text(`   Min: ${leistungStats.min.toFixed(2)}, Max: ${leistungStats.max.toFixed(2)}, Ø: ${leistungStats.avg.toFixed(2)} t/h`);
   }
@@ -115,7 +131,8 @@ app.get("/data", async (req, res) => {
   for await (const chunk of bufferStream) buffers.push(chunk);
   return Buffer.concat(buffers);
 }
- function generateCSV(data) {
+
+function generateCSV(data) {
   if (!data || data.length === 0) return Buffer.from("Keine Daten verfügbar.");
 
   const fields = ["timestamp", "gewicht", "bandgeschwindigkeit", "korrekturfaktor", "total_weight", "running_total"];
@@ -127,7 +144,7 @@ app.get("/data", async (req, res) => {
 
   return Buffer.from(header + rows, "utf-8");
 }
-// 📧 EMAIL VERSAND
+
 async function sendReportEmail(label, daysBack) {
   await client.connect();
   const daten = await client
@@ -152,6 +169,7 @@ async function sendReportEmail(label, daysBack) {
   });
 
   const pdfBuffer = await generatePDF(filtered, label, daysBack);
+  const csvBuffer = generateCSV(filtered);
 
   const transporter = nodemailer.createTransport({
     service: "gmail",
@@ -161,22 +179,76 @@ async function sendReportEmail(label, daysBack) {
     },
   });
 
-const csvBuffer = generateCSV(filtered);
+  await transporter.sendMail({
+    from: `"IoT Dashboard" <${process.env.EMAIL_USER}>`,
+    to: emailSettings.email,
+    subject: label,
+    text: "Im Anhang findest du deinen PDF- und CSV-Bericht.",
+    attachments: [
+      { filename: "Waagenreport.pdf", content: pdfBuffer },
+      { filename: "Waagendaten.csv", content: csvBuffer },
+    ],
+  });
 
-await transporter.sendMail({
-  from: `"IoT Dashboard" <${process.env.EMAIL_USER}>`,
-  to: emailSettings.email,
-  subject: label,
-  text: "Im Anhang findest du deinen PDF- und CSV-Bericht.",
-  attachments: [
-    { filename: "Waagenreport.pdf", content: pdfBuffer },
-    { filename: "Waagendaten.csv", content: csvBuffer },
-  ],
-});
   console.log(`✅ ${label} gesendet an ${emailSettings.email}`);
 }
 
-// 🕒 CRON-JOBS
+// 🔔 Grenzwertprüfung und Alarmierung
+async function checkThresholdsAndNotify() {
+  await client.connect();
+  const daten = await client
+    .db("pklose")
+    .collection("messwerte")
+    .find({})
+    .sort({ timestamp: -1 })
+    .limit(1)
+    .toArray();
+
+  if (!daten.length) return;
+
+  const e = daten[0];
+  const alerts = [];
+
+  const gewicht = parseFloat(e.gewicht || 0);
+  const band = parseFloat(e.bandgeschwindigkeit || 0);
+  const korrektur = parseFloat(e.korrekturfaktor || 1);
+  const leistung = gewicht * band * korrektur * 3.6;
+
+  if (gewicht > thresholdSettings.gewicht) alerts.push(`⚠️ Gewicht > ${thresholdSettings.gewicht} kg: ${gewicht}`);
+  if (band > thresholdSettings.band) alerts.push(`⚠️ Bandgeschwindigkeit > ${thresholdSettings.band} m/s: ${band}`);
+  if (leistung > thresholdSettings.leistung) alerts.push(`⚠️ Förderleistung > ${thresholdSettings.leistung} t/h: ${leistung.toFixed(2)}`);
+
+  if (
+    thresholdSettings.korrektur &&
+    lastKorrekturfaktor !== null &&
+    korrektur !== lastKorrekturfaktor
+  ) {
+    alerts.push(`⚠️ Korrekturfaktor geändert: ${lastKorrekturfaktor} ➜ ${korrektur}`);
+  }
+
+  lastKorrekturfaktor = korrektur;
+
+  if (alerts.length) {
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
+      },
+    });
+
+    await transporter.sendMail({
+      from: `"IoT Dashboard" <${process.env.EMAIL_USER}>`,
+      to: emailSettings.email,
+      subject: "🚨 Grenzwert Alarm",
+      text: alerts.join("\n"),
+    });
+
+    console.log("🚨 Grenzwert-Mail gesendet.");
+  }
+}
+
+// ⏰ CRON-JOBS
 cron.schedule("0 8 * * *", () => {
   if (emailSettings.interval === "daily") sendReportEmail("Täglicher Bericht", 1);
 });
@@ -186,18 +258,20 @@ cron.schedule("0 8 * * 1", () => {
 cron.schedule("0 8 1 * *", () => {
   if (emailSettings.interval === "monthly") sendReportEmail("Monatsbericht", 30);
 });
+cron.schedule("*/10 * * * *", () => {
+  if (emailSettings.email) checkThresholdsAndNotify();
+});
 
-// 📤 MANUELL SENDEN
+// 🖱️ MANUELL SENDEN
 app.post("/send-now", async (req, res) => {
   try {
-    const days = parseInt(req.body.days) || 1; // fallback: 1 Tag
+    const days = parseInt(req.body.days) || 1;
     await sendReportEmail("Manuell gesendeter Bericht", days);
     res.send("✅ Bericht manuell gesendet");
   } catch (err) {
     console.error(err);
-    res.status(500).send("❌ Fehler beim Senden");
+    res.status(500).send(" Fehler beim Senden");
   }
 });
-// 🌐 START SERVER
-app.listen(10000, () => console.log("🚀 API läuft auf Port 10000"));
 
+app.listen(10000, () => console.log("🚀 API läuft auf Port 10000"));
