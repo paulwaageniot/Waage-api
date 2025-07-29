@@ -173,14 +173,14 @@ cron.schedule("0 8 1 * *", () => {
 // 📤 MANUELL SENDEN
 app.post("/send-now", async (req, res) => {
   try {
-    await sendReportEmail("Manuell gesendeter Bericht", 1);
+    const days = parseInt(req.body.days) || 1; // fallback: 1 Tag
+    await sendReportEmail("Manuell gesendeter Bericht", days);
     res.send("✅ Bericht manuell gesendet");
   } catch (err) {
     console.error(err);
     res.status(500).send("❌ Fehler beim Senden");
   }
 });
-
 // 🌐 START SERVER
 app.listen(10000, () => console.log("🚀 API läuft auf Port 10000"));
 
