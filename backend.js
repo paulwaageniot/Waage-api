@@ -258,7 +258,7 @@ cron.schedule("0 8 * * 1", () => {
 cron.schedule("0 8 1 * *", () => {
   if (emailSettings.interval === "monthly") sendReportEmail("Monatsbericht", 30);
 });
-cron.schedule("*/10 * * * *", () => {
+cron.schedule("*/30 * * * * *", () => {
   if (emailSettings.email) checkThresholdsAndNotify();
 });
 
