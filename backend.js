@@ -115,7 +115,18 @@ app.get("/data", async (req, res) => {
   for await (const chunk of bufferStream) buffers.push(chunk);
   return Buffer.concat(buffers);
 }
+ function generateCSV(data) {
+  if (!data || data.length === 0) return Buffer.from("Keine Daten verfügbar.");
 
+  const fields = ["timestamp", "gewicht", "bandgeschwindigkeit", "korrekturfaktor", "total_weight", "running_total"];
+  const header = fields.join(";") + "\n";
+
+  const rows = data.map(e =>
+    fields.map(f => e[f] !== undefined ? e[f] : "").join(";")
+  ).join("\n");
+
+  return Buffer.from(header + rows, "utf-8");
+}
 // 📧 EMAIL VERSAND
 async function sendReportEmail(label, daysBack) {
   await client.connect();
@@ -150,14 +161,18 @@ async function sendReportEmail(label, daysBack) {
     },
   });
 
-  await transporter.sendMail({
-    from: `"IoT Dashboard" <${process.env.EMAIL_USER}>`,
-    to: emailSettings.email,
-    subject: label,
-    text: "Im Anhang findest du deinen PDF-Bericht.",
-    attachments: [{ filename: "bericht.pdf", content: pdfBuffer }],
-  });
+const csvBuffer = generateCSV(filtered);
 
+await transporter.sendMail({
+  from: `"IoT Dashboard" <${process.env.EMAIL_USER}>`,
+  to: emailSettings.email,
+  subject: label,
+  text: "Im Anhang findest du deinen PDF- und CSV-Bericht.",
+  attachments: [
+    { filename: "Waagenreport.pdf", content: pdfBuffer },
+    { filename: "Waagendaten.csv", content: csvBuffer },
+  ],
+});
   console.log(`✅ ${label} gesendet an ${emailSettings.email}`);
 }
 
