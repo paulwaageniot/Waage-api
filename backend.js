@@ -41,16 +41,18 @@ app.get("/data", async (req, res) => {
 });
 
 // 📄 PDF GENERIEREN
-async function generatePDF(data, label = "Automatischer Bericht") {
+ async function generatePDF(data, label = "Automatischer Bericht", daysBack = 1) {
   const doc = new PDFDocument();
   const bufferStream = new stream.PassThrough();
   doc.pipe(bufferStream);
 
-  doc.fontSize(16).text(label, { align: "center" });
-  doc.moveDown();
-  doc.fontSize(12).text(`Bericht erstellt am: ${new Date().toLocaleString("de-DE")}`);
+  doc.fontSize(18).text(label, { align: "center" });
   doc.moveDown();
 
+  const createdAt = new Date().toLocaleString("de-DE", { timeZone: "Europe/Berlin" });
+  doc.fontSize(12).text(`Bericht erstellt am: ${createdAt}`);
+  doc.text(`Zeitraum: Letzte ${daysBack} Tage`);
+  doc.moveDown();
   if (!data || data.length === 0) {
     doc.text("Keine Daten für diesen Zeitraum verfügbar.");
     doc.end();
@@ -82,9 +84,9 @@ async function generatePDF(data, label = "Automatischer Bericht") {
     const values = data.map(e => parseFloat(e[field] || 0)).filter(v => !isNaN(v));
     const stats = getStats(values);
     if (!stats) {
-      doc.text(`➤ ${label}: Keine gültigen Daten.`);
+      doc.text(`- ${label}: Keine gültigen Daten.`);
     } else {
-      doc.text(`➤ ${label}:`);
+      doc.text(`- ${label}:`);
       doc.text(`   Start: ${stats.first.toFixed(2)} ${unit}, Ende: ${stats.last.toFixed(2)} ${unit}`);
       doc.text(`   Min: ${stats.min.toFixed(2)}, Max: ${stats.max.toFixed(2)}, Ø: ${stats.avg.toFixed(2)} ${unit}`);
     }
@@ -138,7 +140,7 @@ async function sendReportEmail(label, daysBack) {
     }
   });
 
-  const pdfBuffer = await generatePDF(filtered, label);
+  const pdfBuffer = await generatePDF(filtered, label, daysBack);
 
   const transporter = nodemailer.createTransport({
     service: "gmail",
